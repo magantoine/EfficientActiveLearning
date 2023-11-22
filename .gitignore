@@ -1,5 +1,7 @@
 models/
 twitter-datasets/
 data/
+test.ipynb
+electra_tweet_analysis/
 *.csv
 __pycache__/
