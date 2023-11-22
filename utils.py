@@ -6,7 +6,7 @@ import numpy as np
 
 
 
-TWITTER_DIR = "twitter-datasets/"
+TWITTER_DIR = "data/twitter-datasets/"
 
 def read_twitter_file(path):
     with open(path) as tf:
