@@ -5,3 +5,4 @@ test.ipynb
 electra_tweet_analysis/
 *.csv
 __pycache__/
+.DS_Store
