@@ -4,7 +4,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import RAdam
-import evaluate
 import random
 
 from datasets import Dataset as HFDataset
@@ -18,12 +17,12 @@ from transformers import (AutoConfig,
                           TrainingArguments,
                           Trainer)
 
+import evaluate
+accuracy = evaluate.load("accuracy")
+
 # ----------------------------- Global Variables ----------------------------- #
 
-TWITTER_DIR = "data/twitter-datasets/"
 AS_TYPES = ["unif_140", "unif_200", "entr_140", "entr_200"]
-SPLITS = ["train", "val"]
-accuracy = evaluate.load("accuracy")
 
 # ------------------------------ Dataset Classes ----------------------------- #
     
@@ -62,7 +61,6 @@ class MyDataset(Dataset):
         # Use the tokenizer to tokenize the input text
         inputs = self.tokenizer(
             sample["tweet"],
-            max_length=None,
             padding="max_length",
             truncation=True,
             return_tensors="pt",
@@ -166,7 +164,7 @@ def load_aware_sampling(as_type=AS_TYPES[0]):
     return {'train': HFDataset.from_pandas(train_df), 'test': HFDataset.from_pandas(test_df)}
 
 def tokenize(ds, tokenizer):
-   tokenized = ds.map(lambda x : tokenizer(x["tweet"], return_tensors="pt", truncation=True, padding='max_length', max_length=None))
+   tokenized = ds.map(lambda x : tokenizer(x["tweet"], return_tensors="pt", truncation=True, padding='max_length'))
    tokenized = tokenized.remove_columns(["tweet"])
    return tokenized
 
@@ -375,7 +373,7 @@ class Experiment():
             input_ids = test_sample.get("input_ids")
             Ids.append(test_sample.get("Id"))
             attention_mask = test_sample.get("attention_mask")
-            outputs = self.model(input_ids=torch.tensor(input_ids).squeeze(), attention_mask=torch.tensor(attention_mask).squeeze())
+            outputs = self.model(input_ids=torch.tensor(input_ids).squeeze(1), attention_mask=torch.tensor(attention_mask).squeeze(1))
             logits = outputs.get("logits").detach().cpu().numpy()
             predictions.append(logits)
 
