@@ -1,5 +1,12 @@
 # Harnessing the Potential of Pretrained Language Models and Active Learning for Tweets Sentiment Analysis
 
+>**Authors**:
+> - Marc-Antoine ALLARD (marc-antoine.allard@epfl.ch)
+> - Antoine MAGRON (antoine.magron@epfl.ch)
+> - Paul TEILETCHE (paul.teiletche@epfl.ch)
+>
+> Repository of APMA-AI team's report for CS-433 project 2.
+
 ## **Main Results**
 Lorem Ipsum
 
