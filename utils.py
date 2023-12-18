@@ -14,8 +14,7 @@ from transformers import (AutoConfig,
                           AutoTokenizer,
                           AutoModelForSequenceClassification,
                           DataCollatorWithPadding,
-                          AdamW,
-                          get_linear_schedule_with_warmup,
+                          TextClassificationPipeline,
                           TrainingArguments,
                           Trainer)
 
@@ -41,18 +40,17 @@ class ActiveLearningModel(nn.Module):
                 labels=None) -> torch.Tensor:
         output = self.model(input_ids=input_ids, attention_mask=attention_mask)
 
-        ## send to teacher model
+        # Send to teacher model
         self.teacher.update(output.logits)
 
         return output
 
 
 class MyDataset(Dataset):
-    def __init__(self, data, tokenizer, device='cuda:0') -> None:
+    def __init__(self, data, tokenizer) -> None:
         super().__init__()
         self.data = data
         self.tokenizer = tokenizer
-        self.device = device
         self.initial_data = data ## used for introducing of randomness
 
     def __len__(self):
@@ -75,17 +73,17 @@ class MyDataset(Dataset):
 
         # Return a dictionary containing the input_ids, attention_mask, and labels
         return {
-            "input_ids": inputs["input_ids"].squeeze(0).to(self.device),
-            "attention_mask": inputs["attention_mask"].squeeze(0).to(self.device),
-            "labels": torch.tensor(labels).to(self.device),
+            "input_ids": inputs["input_ids"].squeeze(),
+            "attention_mask": inputs["attention_mask"].squeeze(),
+            "labels": torch.tensor(labels),
         }
 
 class TeacherDataset(MyDataset):
-    def __init__(self, data, tokenizer, device='cuda:0', T=1_000):
+    def __init__(self, data, tokenizer, T=1_000):
         # self.data = self.load_data()
-        super().__init__(data, tokenizer, device)
+        super().__init__(data, tokenizer)
         self.T = T
-        self.allHs = torch.tensor([]).to(self.device)
+        self.allHs = torch.tensor([])
 
     def update(self, past_logits, automatic_new_iter=False):
         Ps = torch.softmax(past_logits, dim=0)
@@ -109,7 +107,7 @@ class TeacherDataset(MyDataset):
           print("> TEACHER ROUND, from", len(self.data), "samples to", len(high_H_idxs) + len(random_init_samples))
           self.data = concatenate_datasets([random_init_samples, high_H_samples])
 
-        self.allHs = torch.tensor([]).to(self.device)
+        self.allHs = torch.tensor([])
 
         if(len(self.data) < self.T):
           print(f"Threshold was set at T = {self.T}, {len(self.data)} remaining datapoints, halting.")
@@ -153,12 +151,9 @@ def create_datasets(sub_sampling=None, data_path="data/twitter-datasets/"):
 
     return HFDataset.from_pandas(df).shuffle()
 
-def load_aware_sampling(as_type=AS_TYPES[0], split=None):
-    print('Aware Sampling')
+def load_aware_sampling(as_type=AS_TYPES[0]):
     if(as_type not in AS_TYPES):
         raise ValueError(f"Aware sampling type must be one of {AS_TYPES}")
-    if(split not in SPLITS):
-        raise ValueError(f"Split must be one of {SPLITS}")
     
     train_df = pd.read_pickle(f"./data/twitter-datasets/aware_sampling_{as_type}_train.pkl")[["tweet", "label"]]
     train_df.columns = ["tweet", "labels"]
@@ -226,7 +221,6 @@ def load_model(model_name, tokenizer, teacher=None, device='cuda:0'):
         model.config.pad_token_id = model.config.eos_token_id
 
     if not teacher is None:
-        print('Active Learning Enabled!')
         model = ActiveLearningModel(model, tok=tokenizer, teacher=teacher)
 
     # Load model to defined device.
@@ -274,6 +268,17 @@ class Experiment():
         # Set the experiment seed
         random.seed(seed)
 
+        print('Experiment summary:')
+        print(f'- Base Model: {self.BASE_MODEL}')
+        print('-'*30)
+        print(f'- Train Set Size: {(self.N*(1-self.test_ratio))}')
+        print(f'- Test Set Size: {int(self.N*self.test_ratio)}')
+        print('-'*30)
+        as_txt = '\U00002705' if not self.aware_sampling is None else '\U0000274C'
+        print(f'- Aware Sampling: {as_txt}')
+        al_txt = '\U00002705' if self.active_learning else '\U0000274C'
+        print(f'- Active Learning: {al_txt}')
+        
     def finetune(self):
         """
             Fine-tune the experiment model.
@@ -295,31 +300,57 @@ class Experiment():
         # Optimizer
         optimizer = RAdam(self.model.parameters(), lr=self.lr)
 
-        # Training Arguments
-        training_args = TrainingArguments(
-            output_dir=f"{self.SAVE_DIR}/{self.BASE_MODEL}",
-            per_device_train_batch_size=self.bs,
-            per_device_eval_batch_size=self.bs,
-            num_train_epochs=self.epochs,
-            weight_decay=self.wd,
-            evaluation_strategy="epoch",
-            save_strategy="epoch"
-        )
-
         print(f"{'-'*30} Training {'-'*30}")
-        # Trainer
-        trainer = CustomTrainer(
-            model=self.model,
-            args=training_args,
-            train_dataset=train_ds,
-            eval_dataset=test_ds,
-            tokenizer=tokenizer,
-            optimizers=(optimizer, None),
-            data_collator=data_collator,
-            compute_metrics=compute_metrics
-        )
+        if self.active_learning:
+            while(len(teacher) != 0):
+                ## train for 1 epoch = 1 round of the DataLoader
+                training_args = TrainingArguments(
+                    output_dir=f"{self.SAVE_DIR}/{self.BASE_MODEL}",
+                    per_device_train_batch_size=self.bs,
+                    per_device_eval_batch_size=self.bs,
+                    num_train_epochs=1,
+                    weight_decay=self.wd,
+                    evaluation_strategy="epoch",
+                    save_strategy="epoch",
+                    remove_unused_columns=False
+                )
 
-        trainer.train()
+                self.trainer = CustomTrainer(
+                    model=self.model,
+                    args=training_args,
+                    train_dataset=teacher,
+                    eval_dataset=test_ds,
+                    tokenizer=tokenizer,
+                    compute_metrics=compute_metrics
+                )
+
+                self.trainer.train()
+                print("FINISHED EPOCH ==> updating")
+                teacher.new_iter() ## teacher round
+        else:
+            # Training Arguments
+            training_args = TrainingArguments(
+                output_dir=f"{self.SAVE_DIR}/{self.BASE_MODEL}",
+                per_device_train_batch_size=self.bs,
+                per_device_eval_batch_size=self.bs,
+                num_train_epochs=self.epochs,
+                weight_decay=self.wd,
+                evaluation_strategy="epoch",
+                save_strategy="epoch"
+            )
+            # Trainer
+            self.trainer = CustomTrainer(
+                model=self.model,
+                args=training_args,
+                train_dataset=train_ds,
+                eval_dataset=test_ds,
+                tokenizer=tokenizer,
+                optimizers=(optimizer, None),
+                data_collator=data_collator,
+                compute_metrics=compute_metrics
+            )
+
+            self.trainer.train()
 
         return model
 
@@ -327,9 +358,9 @@ class Experiment():
         # Load the Tweet Test dataset
         with open(f"{self.DATA_PATH}/test_data.txt") as test_file:
             test_id, test_tweets = zip(*[(x.split(",")[0], ",".join(x.split(",")[1:])) for x in test_file.read().split("\n")])
-
+        
         # Tokenization
-        test_df = pd.DataFrame({'Id':test_id, 'tweet': test_tweets}).set_index("Id")
+        test_df = pd.DataFrame({'Id':test_id, 'tweet': test_tweets}).iloc[:10].set_index("Id")
         test_ds = HFDataset.from_pandas(test_df)
         test_ds = tokenize(test_ds, self.tokenizer)
 
@@ -337,13 +368,12 @@ class Experiment():
         predictions = []
         Ids = []
         for i, test_sample in enumerate(test_ds):
-            print(f"{i} / 10000", end="\r")
+            print(f"{i+1} / {len(test_ds)}", end="\r")
             input_ids = test_sample.get("input_ids")
             Ids.append(test_sample.get("Id"))
             attention_mask = test_sample.get("attention_mask")
-            outputs = self.model(input_ids=torch.tensor(input_ids).squeeze(1), attention_mask=torch.tensor(attention_mask).squeeze(1))
+            outputs = self.model(input_ids=torch.tensor(input_ids).squeeze(), attention_mask=torch.tensor(attention_mask).squeeze())
             logits = outputs.get("logits").detach().cpu().numpy()
-
             predictions.append(logits)
 
         # Store
