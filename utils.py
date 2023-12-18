@@ -170,14 +170,14 @@ def tokenize(ds, tokenizer):
    tokenized = tokenized.remove_columns(["tweet"])
    return tokenized
 
-def load_data(N, model_name, test_ratio=.3, active_learning=False, aware_sampling=None, data_path='data/twitter-datasets/'):
+def load_data(N, model_name, test_ratio=.3, active_learning=False, T=10_000, aware_sampling=False, aware_sampling_type='unif_140', data_path='data/twitter-datasets/'):
     """
         Load, split and tokenizes the tweet dataset
     """
     # Create dataset
     print('Creating the dataset...')
-    ds = create_datasets(sub_sampling=N, data_path=data_path).train_test_split(test_size=test_ratio) if aware_sampling is None \
-                             else load_aware_sampling(as_type=aware_sampling)
+    ds = create_datasets(sub_sampling=N, data_path=data_path).train_test_split(test_size=test_ratio) if aware_sampling == False \
+                             else load_aware_sampling(as_type=aware_sampling_type)
 
     # Get the model's tokenizer.
     print('Loading tokenizer...')
@@ -190,7 +190,7 @@ def load_data(N, model_name, test_ratio=.3, active_learning=False, aware_samplin
         tokenizer.pad_token = tokenizer.eos_token
 
     print('Preprocessing the Training Data...')
-    train_ds = tokenize(ds['train'], tokenizer) if active_learning == False else TeacherDataset(ds['train'], tokenizer)
+    train_ds = tokenize(ds['train'], tokenizer) if active_learning == False else TeacherDataset(ds['train'], tokenizer, T)
     print('Created `train_ds` with %d examples!'%len(train_ds))
 
     print('Preprocessing the Test Data...')
@@ -204,7 +204,7 @@ def load_data(N, model_name, test_ratio=.3, active_learning=False, aware_samplin
 
 def load_model(model_name, tokenizer, teacher=None, device='cuda:0'):
     """
-        Loads the given HF model
+        Loads the given HF model.
     """
     # Get the model's configuration.
     print('Loading configuraiton...')
@@ -237,10 +237,11 @@ class Experiment():
               epochs: int=1,
               bs: int=64,
               lr: float=2e-5,
-              wd: float=0.01,
-              warmup_pct: float=.3,
+              wd: float=1e-3,
               active_learning: bool=False,
-              aware_sampling = None,
+              T: int=10_000,
+              aware_sampling: bool=False,
+              aware_sampling_type: str='unif_140',
               SAVE_DIR: str="Global_Work/",
               BASE_MODEL: str="vinai/bertweet-base",
               DATA_PATH: str="data/twitter-datasets/",
@@ -255,26 +256,30 @@ class Experiment():
         self.bs = bs
         self.lr = lr
         self.wd = wd
-        self.warmup_pct = warmup_pct
+
+        # Active Learnings Args
+        self.active_learning = active_learning
+        self.T = T
+        self.aware_sampling = aware_sampling
+        self.aware_sampling_type = aware_sampling_type
 
         # Global Args
         self.SAVE_DIR = SAVE_DIR
         self.BASE_MODEL = BASE_MODEL
         self.DATA_PATH = DATA_PATH
-        self.active_learning = active_learning
-        self.aware_sampling = aware_sampling
         self.device = device
 
         # Set the experiment seed
         random.seed(seed)
 
+        # Print the summary of the experiment
         print('Experiment summary:')
         print(f'- Base Model: {self.BASE_MODEL}')
         print('-'*30)
         print(f'- Train Set Size: {(self.N*(1-self.test_ratio))}')
         print(f'- Test Set Size: {int(self.N*self.test_ratio)}')
         print('-'*30)
-        as_txt = '\U00002705' if not self.aware_sampling is None else '\U0000274C'
+        as_txt = '\U00002705' if self.aware_sampling else '\U0000274C'
         print(f'- Aware Sampling: {as_txt}')
         al_txt = '\U00002705' if self.active_learning else '\U0000274C'
         print(f'- Active Learning: {al_txt}')
@@ -286,7 +291,7 @@ class Experiment():
         # Load the data
         print(f"{'-'*30} Preparing the data {'-'*30}")
         train_ds, test_ds, tokenizer, data_collator = load_data(self.N, self.BASE_MODEL, self.test_ratio, \
-                                                                active_learning=self.active_learning, aware_sampling=self.aware_sampling,\
+                                                                active_learning=self.active_learning, aware_sampling=self.aware_sampling, aware_sampling_type=self.aware_sampling_type,\
                                                                     data_path=self.DATA_PATH)
         # Load the model
         print(f"{'-'*30} Preparing the model {'-'*30}")
@@ -298,7 +303,7 @@ class Experiment():
         self.tokenizer = tokenizer
 
         # Optimizer
-        optimizer = RAdam(self.model.parameters(), lr=self.lr)
+        optimizer = RAdam(self.model.parameters(), lr=self.lr, weight_decay=self.wd)
 
         print(f"{'-'*30} Training {'-'*30}")
         if self.active_learning:
@@ -309,7 +314,6 @@ class Experiment():
                     per_device_train_batch_size=self.bs,
                     per_device_eval_batch_size=self.bs,
                     num_train_epochs=1,
-                    weight_decay=self.wd,
                     evaluation_strategy="epoch",
                     save_strategy="epoch",
                     remove_unused_columns=False
@@ -334,7 +338,6 @@ class Experiment():
                 per_device_train_batch_size=self.bs,
                 per_device_eval_batch_size=self.bs,
                 num_train_epochs=self.epochs,
-                weight_decay=self.wd,
                 evaluation_strategy="epoch",
                 save_strategy="epoch"
             )
@@ -360,7 +363,7 @@ class Experiment():
             test_id, test_tweets = zip(*[(x.split(",")[0], ",".join(x.split(",")[1:])) for x in test_file.read().split("\n")])
         
         # Tokenization
-        test_df = pd.DataFrame({'Id':test_id, 'tweet': test_tweets}).iloc[:10].set_index("Id")
+        test_df = pd.DataFrame({'Id':test_id, 'tweet': test_tweets}).set_index("Id")
         test_ds = HFDataset.from_pandas(test_df)
         test_ds = tokenize(test_ds, self.tokenizer)
 
