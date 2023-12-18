@@ -1,79 +1,76 @@
-from datasets import Dataset as HFDataset
 from torch.utils.data import Dataset
-import pickle
 import pandas as pd
 import numpy as np
 import torch
+import torch.nn as nn
+from torch.optim import RAdam
+import evaluate
+import random
 
+from datasets import Dataset as HFDataset
+from datasets import concatenate_datasets
 
+from transformers import (AutoConfig,
+                          AutoTokenizer,
+                          AutoModelForSequenceClassification,
+                          DataCollatorWithPadding,
+                          AdamW,
+                          get_linear_schedule_with_warmup,
+                          TrainingArguments,
+                          Trainer)
 
+# ----------------------------- Global Variables ----------------------------- #
 
 TWITTER_DIR = "data/twitter-datasets/"
+AS_TYPES = ["unif_140", "unif_200", "entr_140", "entr_200"]
+SPLITS = ["train", "val"]
+accuracy = evaluate.load("accuracy")
 
-def read_twitter_file(path):
-    with open(path) as tf:
-        tweets = tf.read().split("\n")
-    return tweets
-
-
-def create_datasets(sub_sampling=None, return_type="ds"):
-    assert(return_type in ["ds", "df"], "Return type either 'df' for DatFrame or 'ds' for Dataset")
-    tnf = read_twitter_file(TWITTER_DIR + "train_neg_full.txt")
-    tnf_labels = np.zeros(len(tnf))
-    tpf = read_twitter_file(TWITTER_DIR + "train_pos_full.txt")
-    tpf_labels = np.ones(len(tnf))
-
+# ------------------------------ Dataset Classes ----------------------------- #
     
-    ds = HFDataset.from_pandas(pd.concat([
-        pd.DataFrame({'tweet': tnf, 'labels': tnf_labels}),
-        pd.DataFrame({'tweet': tpf, 'labels': tpf_labels}),
-        ]
-    ).set_index("tweet")).shuffle()
+class ActiveLearningModel(nn.Module):
+    def __init__(self, model, tok, teacher):
+        super().__init__()
+        self.model = model
+        self.tok = tok
+        self.teacher = teacher
 
-    if(sub_sampling is not None):
-        ds = ds[:sub_sampling]
+    def forward(self,
+                input_ids: torch.Tensor,
+                attention_mask: torch.Tensor,
+                labels=None) -> torch.Tensor:
+        output = self.model(input_ids=input_ids, attention_mask=attention_mask)
 
-    cast_class = HFDataset if(return_type == 'ds') else pd.DataFrame
-    
-    return cast_class.from_dict(ds)
+        ## send to teacher model
+        self.teacher.update(output.logits)
 
-
+        return output
 
 
 class MyDataset(Dataset):
-    """
-        Dataset class that process the samples and puts them on the necessary device
-    """
-
-    def __init__(self, data, tokenizer, max_length, device) -> None:
+    def __init__(self, data, tokenizer, device='cuda:0') -> None:
         super().__init__()
         self.data = data
         self.tokenizer = tokenizer
-        self.max_length = max_length
         self.device = device
         self.initial_data = data ## used for introducing of randomness
 
     def __len__(self):
-        # Return the total number of samples in your dataset
         return len(self.data)
 
-
     def __getitem__(self, idx):
-        # Retrieve and preprocess a single sample at the given index
-
         sample = self.data[idx]
 
         # Use the tokenizer to tokenize the input text
         inputs = self.tokenizer(
             sample["tweet"],
-            max_length=self.max_length,
+            max_length=None,
             padding="max_length",
             truncation=True,
             return_tensors="pt",
         )
 
         # You might want to include other information such as labels
-
         labels = sample.get("labels", [])
 
         # Return a dictionary containing the input_ids, attention_mask, and labels
@@ -83,28 +80,289 @@ class MyDataset(Dataset):
             "labels": torch.tensor(labels).to(self.device),
         }
 
+class TeacherDataset(MyDataset):
+    def __init__(self, data, tokenizer, device='cuda:0', T=1_000):
+        # self.data = self.load_data()
+        super().__init__(data, tokenizer, device)
+        self.T = T
+        self.allHs = torch.tensor([]).to(self.device)
 
-AS_TYPES = ["unif_140", "unif_200", "entr_140", "entr_200"]
-SPLITS = ["train", "val"]
-DATASET_TYPES = ["ds", "df"]
-def load_aware_sampling(as_type=AS_TYPES[0], split="train", return_type=DATASET_TYPES[0]):
+    def update(self, past_logits, automatic_new_iter=False):
+        Ps = torch.softmax(past_logits, dim=0)
+        nHs = (-Ps * torch.log(Ps)).sum(dim=-1).reshape((-1,))
+        if(len(self.allHs) + len(nHs) <= len(self.data)): ## test data
+          self.allHs = torch.cat([self.allHs, nHs])
+          if(automatic_new_iter and (self.allHs.size()[0] == len(self.data))):
+              self.new_iter()
+
+    def new_iter(self, add_randomness=False):
+        if(not add_randomness):
+          selected_idx = self.allHs.argsort()[-int(len(self.allHs) / 2):] ## take the sample above the entropy median
+          print("> TEACHER ROUND, from", len(self.data), "samples to", len(selected_idx))
+          self.data = HFDataset.from_dict(self.data[selected_idx.tolist()])
+
+        else :
+          CHUNK_SIZE = int(1 * len(self.allHs) / 4)
+          high_H_idxs = self.allHs.argsort()[-CHUNK_SIZE:] ## 1/4 of high entropy samples
+          high_H_samples = HFDataset.from_dict(self.data[high_H_idxs.tolist()])
+          random_init_samples = HFDataset.from_dict(self.data[torch.randperm(len(self.data))[:CHUNK_SIZE]])
+          print("> TEACHER ROUND, from", len(self.data), "samples to", len(high_H_idxs) + len(random_init_samples))
+          self.data = concatenate_datasets([random_init_samples, high_H_samples])
+
+        self.allHs = torch.tensor([]).to(self.device)
+
+        if(len(self.data) < self.T):
+          print(f"Threshold was set at T = {self.T}, {len(self.data)} remaining datapoints, halting.")
+          self.data = HFDataset.from_dict({}) ## empty dataset ===> halt
+
     
+def compute_metrics(eval_pred):
+    predictions, labels = eval_pred
+    predictions = np.argmax(predictions, axis=1)
+    return accuracy.compute(predictions=predictions, references=labels)
+
+class CustomTrainer(Trainer):
+  def compute_loss(self, model, inputs, return_outputs=False):
+      labels = inputs.get("labels")
+      labels = labels.long()
+      # forward pass
+      outputs = model(input_ids=inputs["input_ids"].squeeze(1), attention_mask=inputs["attention_mask"].squeeze(1))
+      logits = outputs.get("logits")
+      loss_fct = nn.CrossEntropyLoss()
+      loss = loss_fct(logits, labels.long())
+      return (loss, outputs) if return_outputs else loss
+
+# ---------------------------------- Loaders --------------------------------- #
+  
+def read_twitter_file(path):
+    with open(path) as tf:
+        tweets = tf.read().split("\n")
+    return tweets
+   
+def create_datasets(sub_sampling=None, data_path="data/twitter-datasets/"):
+    tnf = read_twitter_file(data_path + "train_neg_full.txt")
+    tpf = read_twitter_file(data_path + "train_pos_full.txt")
+
+    df = pd.concat([
+        pd.DataFrame({'tweet': tnf, 'labels': np.zeros(len(tnf))}),
+        pd.DataFrame({'tweet': tpf, 'labels': np.ones(len(tnf))}),
+    ]).set_index("tweet")
+
+    if(sub_sampling is not None):
+        df = df.sample(sub_sampling)
+
+    return HFDataset.from_pandas(df).shuffle()
+
+def load_aware_sampling(as_type=AS_TYPES[0], split=None):
+    print('Aware Sampling')
     if(as_type not in AS_TYPES):
         raise ValueError(f"Aware sampling type must be one of {AS_TYPES}")
     if(split not in SPLITS):
         raise ValueError(f"Split must be one of {SPLITS}")
-    if(return_type not in DATASET_TYPES):
-        raise ValueError(f"Dataset type must be one of {DATASET_TYPES}")
     
-    with open(f"./data/twitter-datasets/aware_sampling_{as_type}_{split}.pkl", 'rb') as f:
-        df = pickle.load(f)
+    train_df = pd.read_pickle(f"./data/twitter-datasets/aware_sampling_{as_type}_train.pkl")[["tweet", "label"]]
+    train_df.columns = ["tweet", "labels"]
+    train_df['labels'] = train_df["labels"].apply(lambda l : 0 if l == -1 else 1)
 
-    df = df[["tweet", "label"]]
-    df.columns = ["tweet", "labels"]
-    df['labels'] = df["labels"].apply(lambda l : 0 if l == -1 else 1)
+    test_df = pd.read_pickle(f"./data/twitter-datasets/aware_sampling_{as_type}_train.pkl")[["tweet", "label"]]
+    test_df.columns = ["tweet", "labels"]
+    test_df['labels'] = test_df["labels"].apply(lambda l : 0 if l == -1 else 1)
 
-    if(return_type == "df"):
-        return df
-    elif(return_type == "ds"):
-        return HFDataset.from_pandas(df)
+    return {'train': HFDataset.from_pandas(train_df), 'test': HFDataset.from_pandas(test_df)}
+
+def tokenize(ds, tokenizer):
+   tokenized = ds.map(lambda x : tokenizer(x["tweet"], return_tensors="pt", truncation=True, padding='max_length', max_length=None))
+   tokenized = tokenized.remove_columns(["tweet"])
+   return tokenized
+
+def load_data(N, model_name, test_ratio=.3, active_learning=False, aware_sampling=None, data_path='data/twitter-datasets/'):
+    """
+        Load, split and tokenizes the tweet dataset
+    """
+    # Create dataset
+    print('Creating the dataset...')
+    ds = create_datasets(sub_sampling=N, data_path=data_path).train_test_split(test_size=test_ratio) if aware_sampling is None \
+                             else load_aware_sampling(as_type=aware_sampling)
+
+    # Get the model's tokenizer.
+    print('Loading tokenizer...')
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+    if "gpt2" in model_name:
+        # default to left padding
+        tokenizer.padding_side = "left"
+        # Define PAD Token = EOS Token = 50256
+        tokenizer.pad_token = tokenizer.eos_token
+
+    print('Preprocessing the Training Data...')
+    train_ds = tokenize(ds['train'], tokenizer) if active_learning == False else TeacherDataset(ds['train'], tokenizer)
+    print('Created `train_ds` with %d examples!'%len(train_ds))
+
+    print('Preprocessing the Test Data...')
+    test_ds = tokenize(ds['test'], tokenizer)
+    print('Created `test_ds` with %d examples!'%len(test_ds))
+
+    # Create the Collator
+    data_collator =  DataCollatorWithPadding(tokenizer=tokenizer)
+
+    return train_ds, test_ds, tokenizer, data_collator
+
+def load_model(model_name, tokenizer, teacher=None, device='cuda:0'):
+    """
+        Loads the given HF model
+    """
+    # Get the model's configuration.
+    print('Loading configuraiton...')
+    model_config = AutoConfig.from_pretrained(model_name, num_labels=2)
+
+    # Get the model.
+    print('Loading model...')
+    model = AutoModelForSequenceClassification.from_pretrained(model_name, config=model_config)
+
+    if "gpt2" in model_name:
+        # resize model embedding to match new tokenizer
+        model.resize_token_embeddings(len(tokenizer))
+        # fix model padding token id
+        model.config.pad_token_id = model.config.eos_token_id
+
+    if not teacher is None:
+        print('Active Learning Enabled!')
+        model = ActiveLearningModel(model, tok=tokenizer, teacher=teacher)
+
+    # Load model to defined device.
+    model.to(device)
+    print('Model loaded to `%s`'%device)
+
+    return model
+
+# ----------------------------- Experiment Class ----------------------------- #
+class Experiment():
+    def __init__(self,
+              N: int=200_000,
+              test_ratio: float=.3,
+              epochs: int=1,
+              bs: int=64,
+              lr: float=2e-5,
+              wd: float=0.01,
+              warmup_pct: float=.3,
+              active_learning: bool=False,
+              aware_sampling = None,
+              SAVE_DIR: str="Global_Work/",
+              BASE_MODEL: str="vinai/bertweet-base",
+              DATA_PATH: str="data/twitter-datasets/",
+              seed: int=42,
+              device: str="cuda:0") -> None:
+        # Data Args
+        self.N = N
+        self.test_ratio = test_ratio
+
+        # Training Args
+        self.epochs = epochs
+        self.bs = bs
+        self.lr = lr
+        self.wd = wd
+        self.warmup_pct = warmup_pct
+
+        # Global Args
+        self.SAVE_DIR = SAVE_DIR
+        self.BASE_MODEL = BASE_MODEL
+        self.DATA_PATH = DATA_PATH
+        self.active_learning = active_learning
+        self.aware_sampling = aware_sampling
+        self.device = device
+
+        # Set the experiment seed
+        random.seed(seed)
+
+    def finetune(self):
+        """
+            Fine-tune the experiment model.
+        """
+        # Load the data
+        print(f"{'-'*30} Preparing the data {'-'*30}")
+        train_ds, test_ds, tokenizer, data_collator = load_data(self.N, self.BASE_MODEL, self.test_ratio, \
+                                                                active_learning=self.active_learning, aware_sampling=self.aware_sampling,\
+                                                                    data_path=self.DATA_PATH)
+        # Load the model
+        print(f"{'-'*30} Preparing the model {'-'*30}")
+        teacher = train_ds if self.active_learning else None
+        model = load_model(self.BASE_MODEL, tokenizer, teacher=teacher, device=self.device)
+
+        # Pushing the variables to the object
+        self.model = model
+        self.tokenizer = tokenizer
+
+        # Optimizer
+        optimizer = RAdam(self.model.parameters(), lr=self.lr)
+
+        # Training Arguments
+        training_args = TrainingArguments(
+            output_dir=f"{self.SAVE_DIR}/{self.BASE_MODEL}",
+            per_device_train_batch_size=self.bs,
+            per_device_eval_batch_size=self.bs,
+            num_train_epochs=self.epochs,
+            weight_decay=self.wd,
+            evaluation_strategy="epoch",
+            save_strategy="epoch"
+        )
+
+        print(f"{'-'*30} Training {'-'*30}")
+        # Trainer
+        trainer = CustomTrainer(
+            model=self.model,
+            args=training_args,
+            train_dataset=train_ds,
+            eval_dataset=test_ds,
+            tokenizer=tokenizer,
+            optimizers=(optimizer, None),
+            data_collator=data_collator,
+            compute_metrics=compute_metrics
+        )
+
+        trainer.train()
+
+        return model
+
+    def predict(self, save=False):
+        # Load the Tweet Test dataset
+        with open(f"{self.DATA_PATH}/test_data.txt") as test_file:
+            test_id, test_tweets = zip(*[(x.split(",")[0], ",".join(x.split(",")[1:])) for x in test_file.read().split("\n")])
+
+        # Tokenization
+        test_df = pd.DataFrame({'Id':test_id, 'tweet': test_tweets}).set_index("Id")
+        test_ds = HFDataset.from_pandas(test_df)
+        test_ds = tokenize(test_ds, self.tokenizer)
+
+        # Prediction
+        predictions = []
+        Ids = []
+        for i, test_sample in enumerate(test_ds):
+            print(f"{i} / 10000", end="\r")
+            input_ids = test_sample.get("input_ids")
+            Ids.append(test_sample.get("Id"))
+            attention_mask = test_sample.get("attention_mask")
+            outputs = self.model(input_ids=torch.tensor(input_ids).squeeze(1), attention_mask=torch.tensor(attention_mask).squeeze(1))
+            logits = outputs.get("logits").detach().cpu().numpy()
+
+            predictions.append(logits)
+
+        # Store
+        predictions = [-1 if pred.argmax() == 0 else 1 for pred in predictions]
+        pred_df = pd.DataFrame({"Id": Ids, "Prediction": predictions}).set_index("Id")
         
+        # Save
+        if save:
+            pred_df.to_csv(f"{self.SAVE_DIR}/results/{self.model}.csv")
+
+        return pred_df
+       
+
+    def run(self):
+        """
+            Run the whole experiment.
+        """
+        # Training
+        self.finetune()
+
+        # Predict
+        self.predict(save=True)
