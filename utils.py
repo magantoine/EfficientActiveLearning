@@ -78,11 +78,12 @@ class MyDataset(Dataset):
         }
 
 class TeacherDataset(MyDataset):
-    def __init__(self, data, tokenizer, T=1_000):
+    def __init__(self, data, tokenizer, device, T=1_000):
         # self.data = self.load_data()
         super().__init__(data, tokenizer)
         self.T = T
-        self.allHs = torch.tensor([])
+        self.device = device
+        self.allHs = torch.tensor([]).to(self.device)
 
     def update(self, past_logits, automatic_new_iter=False):
         Ps = torch.softmax(past_logits, dim=0)
@@ -106,7 +107,7 @@ class TeacherDataset(MyDataset):
           print("> TEACHER ROUND, from", len(self.data), "samples to", len(high_H_idxs) + len(random_init_samples))
           self.data = concatenate_datasets([random_init_samples, high_H_samples])
 
-        self.allHs = torch.tensor([])
+        self.allHs = torch.tensor([]).to(self.device)
 
         if(len(self.data) < self.T):
           print(f"Threshold was set at T = {self.T}, {len(self.data)} remaining datapoints, halting.")
@@ -150,33 +151,32 @@ def create_datasets(sub_sampling=None, data_path="data/twitter-datasets/"):
 
     return HFDataset.from_pandas(df).shuffle()
 
-def load_aware_sampling(as_type=AS_TYPES[0]):
+def load_aware_sampling(data_path=data_path, test_ratio=0.3, as_type=AS_TYPES[0]):
     if(as_type not in AS_TYPES):
         raise ValueError(f"Aware sampling type must be one of {AS_TYPES}")
     
-    train_df = pd.read_pickle(f"./data/twitter-datasets/aware_sampling_{as_type}_train.pkl")[["tweet", "label"]]
+    train_df = pd.read_pickle(f"{data_path}/aware_sampling_{as_type}_train.pkl")[["tweet", "label"]]
     train_df.columns = ["tweet", "labels"]
     train_df['labels'] = train_df["labels"].apply(lambda l : 0 if l == -1 else 1)
+    train_ds = HFDataset.from_pandas(train_df)
 
-    test_df = pd.read_pickle(f"./data/twitter-datasets/aware_sampling_{as_type}_train.pkl")[["tweet", "label"]]
-    test_df.columns = ["tweet", "labels"]
-    test_df['labels'] = test_df["labels"].apply(lambda l : 0 if l == -1 else 1)
+    test_ds = create_datasets(sub_sampling=len(train_ds)*test_ratio)
 
-    return {'train': HFDataset.from_pandas(train_df), 'test': HFDataset.from_pandas(test_df)}
+    return {'train': train_ds, 'test': test_ds}
 
 def tokenize(ds, tokenizer):
    tokenized = ds.map(lambda x : tokenizer(x["tweet"], return_tensors="pt", truncation=True, padding='max_length'))
    tokenized = tokenized.remove_columns(["tweet"])
    return tokenized
 
-def load_data(N, model_name, test_ratio=.3, active_learning=False, T=10_000, aware_sampling=False, aware_sampling_type='unif_140', data_path='data/twitter-datasets/'):
+def load_data(N, model_name, test_ratio=.3, active_learning=False, T=10_000, aware_sampling=False, aware_sampling_type='unif_140', device='cuda:0', data_path='data/twitter-datasets/'):
     """
         Load, split and tokenizes the tweet dataset
     """
     # Create dataset
     print('Creating the dataset...')
     ds = create_datasets(sub_sampling=N, data_path=data_path).train_test_split(test_size=test_ratio) if aware_sampling == False \
-                             else load_aware_sampling(as_type=aware_sampling_type)
+                             else load_aware_sampling(data_path=data_path, test_ratio=test_ratio, as_type=aware_sampling_type)
 
     # Get the model's tokenizer.
     print('Loading tokenizer...')
@@ -189,7 +189,7 @@ def load_data(N, model_name, test_ratio=.3, active_learning=False, T=10_000, awa
         tokenizer.pad_token = tokenizer.eos_token
 
     print('Preprocessing the Training Data...')
-    train_ds = tokenize(ds['train'], tokenizer) if active_learning == False else TeacherDataset(ds['train'], tokenizer, T)
+    train_ds = tokenize(ds['train'], tokenizer) if active_learning == False else TeacherDataset(ds['train'], tokenizer, device, T=T)
     print('Created `train_ds` with %d examples!'%len(train_ds))
 
     print('Preprocessing the Test Data...')
@@ -276,6 +276,12 @@ class Experiment():
         random.seed(seed)
 
         # Print the summary of the experiment
+        self.summarize()
+
+    def summarize(self):
+        """
+            Summarizes the experiment
+        """
         print('Experiment summary:')
         print(f'- Base Model: {self.BASE_MODEL}')
         print('-'*30)
@@ -291,7 +297,7 @@ class Experiment():
         print(f'- Start Learning Rate: {self.lr}')
         warm_txt = '\U00002705' if (self.optimizer.lower() == 'radam') or (self.warm_pct > 0.0) else '\U0000274C'
         print(f'- Warmup: {warm_txt}')
-        
+   
     def finetune(self):
         """
             Fine-tune the experiment model.
@@ -300,7 +306,7 @@ class Experiment():
         print(f"{'-'*30} Preparing the data {'-'*30}")
         train_ds, test_ds, tokenizer, data_collator = load_data(self.N, self.BASE_MODEL, self.test_ratio, \
                                                                 active_learning=self.active_learning, aware_sampling=self.aware_sampling, aware_sampling_type=self.aware_sampling_type,\
-                                                                    data_path=self.DATA_PATH)
+                                                                    device=self.device, data_path=self.DATA_PATH)
         # Load the model
         print(f"{'-'*30} Preparing the model {'-'*30}")
         teacher = train_ds if self.active_learning else None
@@ -322,6 +328,7 @@ class Experiment():
         
 
         print(f"{'-'*30} Training {'-'*30}")
+        epochs_cnt = 1
         if self.active_learning:
             while(len(teacher) != 0):
                 ## train for 1 epoch = 1 round of the DataLoader
@@ -346,7 +353,9 @@ class Experiment():
 
                 self.trainer.train()
                 print("FINISHED EPOCH ==> updating")
-                teacher.new_iter() ## teacher round
+                teacher.new_iter(add_randomness=True) ## teacher round
+                model.model.save_pretrained(f"{self.SAVE_DIR}/{self.BASE_MODEL}/epoch_{epochs_cnt}/")
+                epochs_cnt += 1
         else:
             # Training Arguments
             training_args = TrainingArguments(
