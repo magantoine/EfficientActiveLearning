@@ -23,6 +23,7 @@ Here are the requirements to use our code:
     pip install datasets
     pip install evaluate
     pip install emojis
+    pip install accelerate
 
     # Torch
     pip install torch
