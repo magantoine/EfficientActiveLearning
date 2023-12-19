@@ -50,19 +50,19 @@ You are free to set any of these arguments for your experiment:
 - **Launch An Experiment**:
 Our code is really simple to use. 
 
-1) Specify your arguments in the **Parameters** section. Here is an example of use.
-    ```python
-    # This launch an experiment using DistillBERT model with 10 000 samples using 3 epochs.
-    exp = Experiment(
-        N=10_000,
-        epochs=3,
-        BASE_MODEL='distilbert-base-uncased'
-    )
-    ```
-
-2) Run the **Training** section to fine-tune your model.
-
-3) Run the **Predict** section to predict your test data.
+    1) Specify your arguments in the **Parameters** section. Here is an example of use.
+        ```python
+        # This launch an experiment using DistillBERT model with 10 000 samples using 3 epochs.
+        exp = Experiment(
+            N=10_000,
+            epochs=3,
+            BASE_MODEL='distilbert-base-uncased'
+        )
+        ```
+    
+    2) Run the **Training** section to fine-tune your model.
+    
+    3) Run the **Predict** section to predict your test data.
 
 
 
