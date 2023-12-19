@@ -285,17 +285,17 @@ class Experiment():
         print('Experiment summary:')
         print(f'- Base Model: {self.BASE_MODEL}')
         print('-'*30)
-        print(f'- Train Set Size: {(self.N*(1-self.test_ratio))}')
-        print(f'- Test Set Size: {int(self.N*self.test_ratio)}')
+        print(f'- Train Set Size: {int(self.N*(1-self.test_ratio))} samples')
+        print(f'- Test Set Size: {int(self.N*self.test_ratio)} samples')
         print('-'*30)
-        as_txt = '\U00002705' if self.aware_sampling else '\U0000274C'
-        print(f'- Aware Sampling: {as_txt} -> {self.aware_sampling_type}')
+        as_txt = f'\U00002705 -> {self.aware_sampling_type}' if self.aware_sampling else '\U0000274C'
+        print(f'- Aware Sampling: {as_txt}')
         al_txt = '\U00002705' if self.active_learning else '\U0000274C'
         print(f'- Active Learning: {al_txt}')
         print('-'*30)
         print(f'- Optimizer: {self.optimizer}')
         print(f'- Start Learning Rate: {self.lr}')
-        warm_txt = '\U00002705' if (self.optimizer.lower() == 'radam') or (self.warm_pct > 0.0) else '\U0000274C'
+        warm_txt = f'\U00002705 -> {self.warm_pct:.0%} of the epochs' if (self.optimizer.lower() == 'radam') or (self.warm_pct > 0.0) else '\U0000274C'
         print(f'- Warmup: {warm_txt}')
    
     def finetune(self):
