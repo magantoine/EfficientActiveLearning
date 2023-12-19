@@ -18,7 +18,18 @@ This codebase is built to be compatible with any [HuggingFace](https://huggingfa
 - **Requirements**:
 Here are the requirements to use our code:
     ```bash
-    pip install ...
+    # Hugging Face
+    pip install transformers
+    pip install datasets
+    pip install evaluate
+    pip install emojis
+
+    # Torch
+    pip install torch
+
+    # General purpose
+    pip install pandas
+    pip install numpy
     ```
 
 - **Experiment Arguments:**
@@ -34,7 +45,7 @@ You are free to set any of these arguments for your experiment:
     - `bs`: Batch size used during training.
     - `lr`: Learning rate for the training process.
     - `wd`: Weight decay parameter.
-    - `warm_pct`: Ratio of epochs used to warmup the optimizer
+    - `warm_pct`: Ratio of steps used to warmup the optimizer
 
     3) *Active Learning Arguments*
     - `active_learning`: Boolean indicating whether active learning is enabled.
