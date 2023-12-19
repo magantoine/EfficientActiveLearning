@@ -151,7 +151,7 @@ def create_datasets(sub_sampling=None, data_path="data/twitter-datasets/"):
 
     return HFDataset.from_pandas(df).shuffle()
 
-def load_aware_sampling(data_path=data_path, test_ratio=0.3, as_type=AS_TYPES[0]):
+def load_aware_sampling(data_path, test_ratio=0.3, as_type=AS_TYPES[0]):
     if(as_type not in AS_TYPES):
         raise ValueError(f"Aware sampling type must be one of {AS_TYPES}")
     
@@ -169,7 +169,7 @@ def tokenize(ds, tokenizer):
    tokenized = tokenized.remove_columns(["tweet"])
    return tokenized
 
-def load_data(N, model_name, test_ratio=.3, active_learning=False, T=10_000, aware_sampling=False, aware_sampling_type='unif_140', device='cuda:0', data_path='data/twitter-datasets/'):
+def load_data(data_path, N, model_name, test_ratio=.3, active_learning=False, T=10_000, aware_sampling=False, aware_sampling_type='unif_140', device='cuda:0'):
     """
         Load, split and tokenizes the tweet dataset
     """
