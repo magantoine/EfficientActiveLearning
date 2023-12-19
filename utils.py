@@ -160,12 +160,12 @@ def load_aware_sampling(data_path, test_ratio=0.3, as_type=AS_TYPES[0]):
     train_df['labels'] = train_df["labels"].apply(lambda l : 0 if l == -1 else 1)
     train_ds = HFDataset.from_pandas(train_df)
 
-    test_ds = create_datasets(sub_sampling=len(train_ds)*test_ratio)
+    test_ds = create_datasets(sub_sampling=int(len(train_ds)*test_ratio))
 
     return {'train': train_ds, 'test': test_ds}
 
 def tokenize(ds, tokenizer):
-   tokenized = ds.map(lambda x : tokenizer(x["tweet"], return_tensors="pt", truncation=True, padding='max_length'))
+   tokenized = ds.map(lambda x : tokenizer(x["tweet"], return_tensors="pt", truncation=True, padding='max_length'), batched=True)
    tokenized = tokenized.remove_columns(["tweet"])
    return tokenized
 
@@ -176,7 +176,7 @@ def load_data(data_path, N, model_name, test_ratio=.3, active_learning=False, T=
     # Create dataset
     print('Creating the dataset...')
     ds = create_datasets(sub_sampling=N, data_path=data_path).train_test_split(test_size=test_ratio) if aware_sampling == False \
-                             else load_aware_sampling(data_path=data_path, test_ratio=test_ratio, as_type=aware_sampling_type)
+                             else load_aware_sampling(data_path, test_ratio=test_ratio, as_type=aware_sampling_type)
 
     # Get the model's tokenizer.
     print('Loading tokenizer...')
@@ -289,7 +289,7 @@ class Experiment():
         print(f'- Test Set Size: {int(self.N*self.test_ratio)}')
         print('-'*30)
         as_txt = '\U00002705' if self.aware_sampling else '\U0000274C'
-        print(f'- Aware Sampling: {as_txt}')
+        print(f'- Aware Sampling: {as_txt} -> {self.aware_sampling_type}')
         al_txt = '\U00002705' if self.active_learning else '\U0000274C'
         print(f'- Active Learning: {al_txt}')
         print('-'*30)
@@ -304,9 +304,9 @@ class Experiment():
         """
         # Load the data
         print(f"{'-'*30} Preparing the data {'-'*30}")
-        train_ds, test_ds, tokenizer, data_collator = load_data(self.N, self.BASE_MODEL, self.test_ratio, \
+        train_ds, test_ds, tokenizer, data_collator = load_data(self.DATA_PATH, self.N, self.BASE_MODEL, self.test_ratio, \
                                                                 active_learning=self.active_learning, aware_sampling=self.aware_sampling, aware_sampling_type=self.aware_sampling_type,\
-                                                                    device=self.device, data_path=self.DATA_PATH)
+                                                                    device=self.device)
         # Load the model
         print(f"{'-'*30} Preparing the model {'-'*30}")
         teacher = train_ds if self.active_learning else None
