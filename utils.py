@@ -13,8 +13,9 @@ from transformers import (AutoConfig,
                           AutoTokenizer,
                           AutoModelForSequenceClassification,
                           DataCollatorWithPadding,
-                          TextClassificationPipeline,
                           TrainingArguments,
+                          AdamW,
+                          get_scheduler,
                           Trainer)
 
 import evaluate
@@ -234,8 +235,10 @@ class Experiment():
               test_ratio: float=.3,
               epochs: int=1,
               bs: int=64,
+              optimizer: str='RAdam',
               lr: float=2e-5,
               wd: float=1e-3,
+              warm_pct: float=0.0,
               active_learning: bool=False,
               T: int=10_000,
               aware_sampling: bool=False,
@@ -251,9 +254,11 @@ class Experiment():
 
         # Training Args
         self.epochs = epochs
+        self.optimizer = optimizer
         self.bs = bs
         self.lr = lr
         self.wd = wd
+        self.warm_pct = warm_pct
 
         # Active Learnings Args
         self.active_learning = active_learning
@@ -281,6 +286,11 @@ class Experiment():
         print(f'- Aware Sampling: {as_txt}')
         al_txt = '\U00002705' if self.active_learning else '\U0000274C'
         print(f'- Active Learning: {al_txt}')
+        print('-'*30)
+        print(f'- Optimizer: {self.optimizer}')
+        print(f'- Start Learning Rate: {self.lr}')
+        warm_txt = '\U00002705' if (self.optimizer.lower() == 'radam') or (self.warm_pct > 0.0) else '\U0000274C'
+        print(f'- Warmup: {warm_txt}')
         
     def finetune(self):
         """
@@ -300,8 +310,16 @@ class Experiment():
         self.model = model
         self.tokenizer = tokenizer
 
+        # Number of steps
+        training_steps = int(len(train_ds)*self.bs)
+        warmup_steps = self.warm_pct * training_steps
+
         # Optimizer
-        optimizer = RAdam(self.model.parameters(), lr=self.lr, weight_decay=self.wd)
+        optimizer = AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.wd) if self.optimizer.lower() == 'adamw' else \
+                        RAdam(self.model.parameters(), lr=self.lr, weight_decay=self.wd)
+        lr_scheduler = get_scheduler("linear", optimizer=optimizer, num_warmup_steps=warmup_steps, num_training_steps=training_steps) if self.optimizer.lower() == 'adamw' else \
+                            None
+        
 
         print(f"{'-'*30} Training {'-'*30}")
         if self.active_learning:
@@ -346,7 +364,7 @@ class Experiment():
                 train_dataset=train_ds,
                 eval_dataset=test_ds,
                 tokenizer=tokenizer,
-                optimizers=(optimizer, None),
+                optimizers=(optimizer, lr_scheduler),
                 data_collator=data_collator,
                 compute_metrics=compute_metrics
             )
