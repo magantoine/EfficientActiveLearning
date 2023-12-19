@@ -30,9 +30,11 @@ You are free to set any of these arguments for your experiment:
 
     2) *Training Arguments*
     - `epochs`: Number of training epochs.
+    - `optimizer`: The training optimizer.
     - `bs`: Batch size used during training.
     - `lr`: Learning rate for the training process.
     - `wd`: Weight decay parameter.
+    - `warm_pct`: Ratio of epochs used to warmup the optimizer
 
     3) *Active Learning Arguments*
     - `active_learning`: Boolean indicating whether active learning is enabled.
