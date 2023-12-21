@@ -9,7 +9,7 @@
 
 ## **Main Results**
 <img src="./img_res/gen_res.png" alt="Local Image" width="300">
-<img src="./img_res/fine_tune_res.png" alt="Local Image" width="600" height="400">
+<img src="./img_res/fine_tune_res.png" alt="Local Image" width="400">
 
 ## **Using our codebase**
 #### Available Pre-Trained Models
