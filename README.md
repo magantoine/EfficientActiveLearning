@@ -8,8 +8,8 @@
 > Repository of APMA-AI team's report for CS-433 project 2.
 
 ## **Main Results**
-<img src="./img_res/gen_res.png" alt="Local Image" width="400" height="220">
-<img src="./img_res/fine_tune_res.png" alt="Local Image" width="550" height="300">
+<img src="./img_res/gen_res.png" alt="">
+<img src="./img_res/fine_tune_res.png" alt="">
 
 ## **Using our codebase**
 #### Available Pre-Trained Models
@@ -19,7 +19,7 @@ This codebase is built to be compatible with any [HuggingFace](https://huggingfa
 - **Requirements**:
 Here are the requirements to use our code:
     ```bash
-        pip install -r requirements.txt
+    pip install -r requirements.txt
     ```
 
 - **Experiment Arguments:**
