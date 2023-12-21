@@ -8,7 +8,7 @@
 > Repository of APMA-AI team's report for CS-433 project 2.
 
 ## **Main Results**
-<img src="./img_res/gen_res.png" alt="Local Image" width="900" height="300">
+<img src="./img_res/gen_res.png" alt="Local Image" width="500" height="300">
 <img src="./img_res/fine_tune_res.png" alt="Local Image" width="1000" height="400">
 
 ## **Using our codebase**
