@@ -5,9 +5,11 @@ import torch
 import torch.nn as nn
 from torch.optim import RAdam
 import random
+from tqdm import tqdm
 
 from datasets import Dataset as HFDataset
 from datasets import concatenate_datasets
+from torch.utils.data import DataLoader
 
 from transformers import (AutoConfig,
                           AutoTokenizer,
@@ -483,27 +485,29 @@ class Experiment():
         # Tokenization
         test_df = pd.DataFrame({'Id':test_id, 'tweet': test_tweets}).set_index("Id")
         test_ds = HFDataset.from_pandas(test_df)
-        test_ds = tokenize(test_ds, self.tokenizer)
+        test_ds = MyDataset(test_ds, self.tokenizer)
 
         # Prediction
+        test_dataloader = DataLoader(test_ds, batch_size=16, shuffle=False)
         predictions = []
         Ids = []
-        for i, test_sample in enumerate(test_ds):
+        for i, test_sample in tqdm(enumerate(test_dataloader)):
             print(f"{i+1} / {len(test_ds)}", end="\r")
             input_ids = test_sample.get("input_ids")
             Ids.append(test_sample.get("Id"))
             attention_mask = test_sample.get("attention_mask")
-            outputs = self.model(input_ids=torch.tensor(input_ids).squeeze(1), attention_mask=torch.tensor(attention_mask).squeeze(1))
+            outputs = self.model(input_ids=torch.tensor(input_ids).squeeze(1).to("cuda:0"), attention_mask=torch.tensor(attention_mask).squeeze(1).to("cuda:0"))
             logits = outputs.get("logits").detach().cpu().numpy()
             predictions.append(logits)
 
         # Store
-        predictions = [-1 if pred.argmax() == 0 else 1 for pred in predictions]
-        pred_df = pd.DataFrame({"Id": Ids, "Prediction": predictions}).set_index("Id")
-        
+        labeled_predictions = [-1 if pred.argmax() == 0 else 1 for pred in sum([list(x) for x in predictions], [])]
+        pred_df = pd.DataFrame({"Id": np.arange(len(labeled_predictions)) + 1, "Prediction": labeled_predictions}).set_index("Id")
+        pred_df.drop(pred_df.index[-1], inplace=True)
+      
         # Save
         if save:
-            pred_df.to_csv(f"{self.SAVE_DIR}/results/{self.model}.csv")
+            pred_df.to_csv(f"{self.SAVE_DIR}/{self.BASE_MODEL}.csv")
 
         return pred_df
        
