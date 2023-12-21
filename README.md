@@ -8,7 +8,9 @@
 > Repository of APMA-AI team's report for CS-433 project 2.
 
 ## **Main Results**
-Lorem Ipsum
+![Local Image](./img_res/gen_res.png)
+![Local Image](./img_res/fine_tune_res.png)
+
 
 ## **Using our codebase**
 #### Available Pre-Trained Models
