@@ -19,19 +19,7 @@ This codebase is built to be compatible with any [HuggingFace](https://huggingfa
 - **Requirements**:
 Here are the requirements to use our code:
     ```bash
-    # Hugging Face
-    pip install transformers
-    pip install datasets
-    pip install evaluate
-    pip install emojis
-    pip install accelerate
-
-    # Torch
-    pip install torch
-
-    # General purpose
-    pip install pandas
-    pip install numpy
+        pip install -r requirements.txt
     ```
 
 - **Experiment Arguments:**
