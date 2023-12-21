@@ -28,6 +28,8 @@ AS_TYPES = ["unif_140", "unif_200", "entr_140", "entr_200"]
 # ------------------------------ Dataset Classes ----------------------------- #
     
 class ActiveLearningModel(nn.Module):
+    """AL decorator for models
+    """
     def __init__(self, model, tok, teacher):
         super().__init__()
         self.model = model
@@ -47,6 +49,8 @@ class ActiveLearningModel(nn.Module):
 
 
 class MyDataset(Dataset):
+    """Custom Dataset Class
+    """
     def __init__(self, data, tokenizer) -> None:
         super().__init__()
         self.data = data
@@ -78,6 +82,8 @@ class MyDataset(Dataset):
         }
 
 class TeacherDataset(MyDataset):
+    """Teacher decorator for Datsets
+    """
     def __init__(self, data, tokenizer, device, T=1_000):
         # self.data = self.load_data()
         super().__init__(data, tokenizer)
@@ -115,29 +121,51 @@ class TeacherDataset(MyDataset):
 
     
 def compute_metrics(eval_pred):
+    """Custom metrics function
+    """
     predictions, labels = eval_pred
     predictions = np.argmax(predictions, axis=1)
     return accuracy.compute(predictions=predictions, references=labels)
 
 class CustomTrainer(Trainer):
-  def compute_loss(self, model, inputs, return_outputs=False):
-      labels = inputs.get("labels")
-      labels = labels.long()
-      # forward pass
-      outputs = model(input_ids=inputs["input_ids"].squeeze(1), attention_mask=inputs["attention_mask"].squeeze(1))
-      logits = outputs.get("logits")
-      loss_fct = nn.CrossEntropyLoss()
-      loss = loss_fct(logits, labels.long())
-      return (loss, outputs) if return_outputs else loss
+    """Custom Trainer class
+    """
+    def compute_loss(self, model, inputs, return_outputs=False):
+        labels = inputs.get("labels")
+        labels = labels.long()
+        # forward pass
+        outputs = model(input_ids=inputs["input_ids"].squeeze(1), attention_mask=inputs["attention_mask"].squeeze(1))
+        logits = outputs.get("logits")
+        loss_fct = nn.CrossEntropyLoss()
+        loss = loss_fct(logits, labels.long())
+        return (loss, outputs) if return_outputs else loss
 
 # ---------------------------------- Loaders --------------------------------- #
   
 def read_twitter_file(path):
+    """Reads twitter txt file.
+
+    Args:
+        path (str): data path.
+
+    Returns:
+        list: tweets list.
+    """
     with open(path) as tf:
         tweets = tf.read().split("\n")
     return tweets
    
 def create_datasets(sub_sampling=None, data_path="data/twitter-datasets/", return_type="ds"):
+    """Samples a dataset
+
+    Args:
+        sub_sampling (int, optional): dataset size, if set to None sample the whole file. Defaults to None.
+        data_path (str, optional): data path. Defaults to "data/twitter-datasets/".
+        return_type (str, optional): return type. Defaults to "ds".
+
+    Returns:
+        Dataset: the dataset.
+    """
     tnf = read_twitter_file(data_path + "train_neg_full.txt")
     tpf = read_twitter_file(data_path + "train_pos_full.txt")
 
@@ -154,9 +182,24 @@ def create_datasets(sub_sampling=None, data_path="data/twitter-datasets/", retur
     return HFDataset.from_pandas(df).shuffle()
 
 def load_aware_sampling(data_path, test_ratio=0.3, as_type=AS_TYPES[0], return_type="ds"):
+    """Loads the aware sampling method.
+
+    Args:
+        data_path (str): the data path.
+        test_ratio (float, optional): Train/Test split ratio. Defaults to 0.3.
+        as_type (str, optional): aware sampling type. Defaults to AS_TYPES[0].
+        return_type (str, optional): Return type. Defaults to "ds".
+
+    Raises:
+        ValueError: if the selected tyoe is not available
+
+    Returns:
+        dict: dictionary containing train (aware sample) and test (random sample) datasets.
+    """
     if(as_type not in AS_TYPES):
         raise ValueError(f"Aware sampling type must be one of {AS_TYPES}")
     
+    # Open the Aware Sampling dataset and preprocess it
     train_df = pd.read_pickle(f"{data_path}/aware_sampling_{as_type}_train.pkl")[["tweet", "label"]]
     train_df.columns = ["tweet", "labels"]
     train_df['labels'] = train_df["labels"].apply(lambda l : 0 if l == -1 else 1)
@@ -165,19 +208,44 @@ def load_aware_sampling(data_path, test_ratio=0.3, as_type=AS_TYPES[0], return_t
         return train_df
     train_ds = HFDataset.from_pandas(train_df)
 
+    # Sample a test set
     test_ds = create_datasets(sub_sampling=int(len(train_ds)*test_ratio))
 
     return {'train': train_ds, 'test': test_ds}
 
 
 def tokenize(ds, tokenizer):
-   tokenized = ds.map(lambda x : tokenizer(x["tweet"], return_tensors="pt", truncation=True, padding='max_length'), batched=True)
-   tokenized = tokenized.remove_columns(["tweet"])
-   return tokenized
+    """Tokenizes the dataset
+
+    Args:
+        ds (Dataset): the dataset.
+        tokenizer (Tokenizer): the tokenizer.
+
+    Returns:
+        Dataset: the tokenized dataset.
+    """
+    # Tokinzes the data
+    tokenized = ds.map(lambda x : tokenizer(x["tweet"], return_tensors="pt", truncation=True, padding='max_length'), batched=True)
+    # Removes unused column
+    tokenized = tokenized.remove_columns(["tweet"])
+    return tokenized
 
 def load_data(data_path, N, model_name, test_ratio=.3, active_learning=False, T=10_000, aware_sampling=False, aware_sampling_type='unif_140', device='cuda:0'):
-    """
-        Load, split and tokenizes the tweet dataset
+    """Load the selected data.
+
+    Args:
+        data_path (str): data path.
+        N (int): sampling size
+        model_name (str): model's name.
+        test_ratio (float, optional): train/test ratio. Defaults to .3.
+        active_learning (bool, optional): flag to enable AL. Defaults to False.
+        T (int, optional): AL stop threshold. Defaults to 10_000.
+        aware_sampling (bool, optional): flag to enable AS. Defaults to False.
+        aware_sampling_type (str, optional): AS type. Defaults to 'unif_140'.
+        device (str, optional): device. Defaults to 'cuda:0'.
+
+    Returns:
+        Tuple: (train dataset, test dataset, tokenizer, data collator)
     """
     # Create dataset
     print('Creating the dataset...')
@@ -208,8 +276,16 @@ def load_data(data_path, N, model_name, test_ratio=.3, active_learning=False, T=
     return train_ds, test_ds, tokenizer, data_collator
 
 def load_model(model_name, tokenizer, teacher=None, device='cuda:0'):
-    """
-        Loads the given HF model.
+    """Loads the selected model.
+
+    Args:
+        model_name (str): model name.
+        tokenizer (Tokenizer): tokenizer.
+        teacher (TeacherDataset, optional): in AL case, train dataset. Defaults to None.
+        device (str, optional): device. Defaults to 'cuda:0'.
+
+    Returns:
+        Models: the model.
     """
     # Get the model's configuration.
     print('Loading configuraiton...')
@@ -236,6 +312,8 @@ def load_model(model_name, tokenizer, teacher=None, device='cuda:0'):
 
 # ----------------------------- Experiment Class ----------------------------- #
 class Experiment():
+    """Experiment class
+    """
     def __init__(self,
               N: int=200_000,
               test_ratio: float=.3,
@@ -285,8 +363,7 @@ class Experiment():
         self.summarize()
 
     def summarize(self):
-        """
-            Summarizes the experiment
+        """Summarizes the experiment.
         """
         print('Experiment summary:')
         print(f'- Base Model: {self.BASE_MODEL}')
@@ -305,8 +382,10 @@ class Experiment():
         print(f'- Warmup: {warm_txt}')
    
     def finetune(self):
-        """
-            Fine-tune the experiment model.
+        """Fine-tune the experiment model.
+
+        Returns:
+            Model: the experiment's fine-tuned model.
         """
         # Load the data
         print(f"{'-'*30} Preparing the data {'-'*30}")
@@ -389,6 +468,14 @@ class Experiment():
         return model
 
     def predict(self, save=False):
+        """Predicts the labels
+
+        Args:
+            save (bool, optional): flag to save the predictions. Defaults to False.
+
+        Returns:
+            DataFrame: the predictions.
+        """
         # Load the Tweet Test dataset
         with open(f"{self.DATA_PATH}/test_data.txt") as test_file:
             test_id, test_tweets = zip(*[(x.split(",")[0], ",".join(x.split(",")[1:])) for x in test_file.read().split("\n")])
@@ -422,8 +509,7 @@ class Experiment():
        
 
     def run(self):
-        """
-            Run the whole experiment.
+        """Fine-tune and predicts.
         """
         # Training
         self.finetune()
