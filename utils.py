@@ -137,7 +137,7 @@ def read_twitter_file(path):
         tweets = tf.read().split("\n")
     return tweets
    
-def create_datasets(sub_sampling=None, data_path="data/twitter-datasets/"):
+def create_datasets(sub_sampling=None, data_path="data/twitter-datasets/", return_type="ds"):
     tnf = read_twitter_file(data_path + "train_neg_full.txt")
     tpf = read_twitter_file(data_path + "train_pos_full.txt")
 
@@ -149,20 +149,26 @@ def create_datasets(sub_sampling=None, data_path="data/twitter-datasets/"):
     if(sub_sampling is not None):
         df = df.sample(sub_sampling)
 
+    if(return_type == "df"):
+        return df
     return HFDataset.from_pandas(df).shuffle()
 
-def load_aware_sampling(data_path, test_ratio=0.3, as_type=AS_TYPES[0]):
+def load_aware_sampling(data_path, test_ratio=0.3, as_type=AS_TYPES[0], return_type="ds"):
     if(as_type not in AS_TYPES):
         raise ValueError(f"Aware sampling type must be one of {AS_TYPES}")
     
     train_df = pd.read_pickle(f"{data_path}/aware_sampling_{as_type}_train.pkl")[["tweet", "label"]]
     train_df.columns = ["tweet", "labels"]
     train_df['labels'] = train_df["labels"].apply(lambda l : 0 if l == -1 else 1)
+
+    if(return_type == "df"):
+        return train_df
     train_ds = HFDataset.from_pandas(train_df)
 
     test_ds = create_datasets(sub_sampling=int(len(train_ds)*test_ratio))
 
     return {'train': train_ds, 'test': test_ds}
+
 
 def tokenize(ds, tokenizer):
    tokenized = ds.map(lambda x : tokenizer(x["tweet"], return_tensors="pt", truncation=True, padding='max_length'), batched=True)
