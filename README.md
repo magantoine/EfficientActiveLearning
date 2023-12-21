@@ -63,7 +63,7 @@ You are free to set any of these arguments for your experiment:
 
 
 - **Launch An Experiment**:
-Our code is really simple to use. 
+Our code is really simple to use. You can produce a sample test AI-Crowd submission using our notebook [experiment](https://github.com/CS-433/ml-project-2-apma_ai/blob/main/experiment.ipynb).
 
     1) Specify your arguments in the **Parameters** section. Here is an example of use.
         ```python
