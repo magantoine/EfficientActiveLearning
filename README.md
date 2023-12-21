@@ -73,6 +73,11 @@ Our code is really simple to use.
             epochs=3,
             BASE_MODEL='distilbert-base-uncased'
         )
+        # This launch the training procedure
+        model = exp.finetune()
+
+        # Perform the prediction with the previous model and store it as a csv file ready to be submit on a platform such as AI-Crowd
+        predictions = exp.predict(save=True)
         ```
     
     2) Run the **Training** section to fine-tune your model.
